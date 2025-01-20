@@ -1,9 +1,10 @@
 <?php
+require_once 'session_config.php';
+session_start();
 include 'db.php';
 include 'send_mailer.php';
 
 // Check if logged in
-session_start();
 if (!isset($_SESSION['user_id'])) {
     header("Location: login.php");
     exit;
@@ -13,16 +14,19 @@ if (!isset($_SESSION['user_id'])) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $task_name = $_POST['task_name'];
     if (!empty($task_name)) {
-        $stmt = $conn->prepare("INSERT INTO tasks (task_name) VALUES (?)");
-        $stmt->bind_param('s', $task_name);
-        $stmt->execute();
-        $stmt->close();
+        $stmt = $conn->prepare("INSERT INTO tasks (task_name, user_id) VALUES (?, ?)");
+        $stmt->execute([$task_name, $_SESSION['user_id']]);
     }
 }
 
 // Get open and closed tasks
-$open_tasks = $conn->query("SELECT * FROM tasks WHERE is_completed = 0");
-$completed_tasks = $conn->query("SELECT * FROM tasks WHERE is_completed = 1");
+$stmt = $conn->prepare("SELECT * FROM tasks WHERE user_id = ? AND is_completed = 0");
+$stmt->execute([$_SESSION['user_id']]);
+$open_tasks = $stmt->fetchAll();
+
+$stmt = $conn->prepare("SELECT * FROM tasks WHERE user_id = ? AND is_completed = 1");
+$stmt->execute([$_SESSION['user_id']]);
+$completed_tasks = $stmt->fetchAll();
 ?>
 
 <!DOCTYPE html>
@@ -67,7 +71,7 @@ $completed_tasks = $conn->query("SELECT * FROM tasks WHERE is_completed = 1");
     <form action="index.php" method="POST" class="mb-4">
         <div class="input-group">
             <input type="text" name="task_name" class="form-control" placeholder="New task..." required>
-            <button type="submit" class="btn btn-primary">Toevoegen</button>
+            <button type="submit" class="btn btn-primary">Add Task</button>
         </div>
     </form>
 
@@ -76,16 +80,16 @@ $completed_tasks = $conn->query("SELECT * FROM tasks WHERE is_completed = 1");
         <div class="col-md-6">
             <h2 class="text-center">Open Tasks</h2>
             <ul class="list-group">
-                <?php if ($open_tasks->num_rows > 0): ?>
-                    <?php while ($row = $open_tasks->fetch_assoc()): ?>
+                <?php if (!empty($open_tasks)): ?>
+                    <?php foreach ($open_tasks as $task): ?>
                         <li class="list-group-item d-flex justify-content-between align-items-center">
-                            <?php echo $row['task_name']; ?>
+                            <?php echo htmlspecialchars($task['task_name']); ?>
                             <div>
-                                <a href="complete_task.php?id=<?php echo $row['id']; ?>" class="btn btn-success btn-sm">Voltooien</a>
-                                <a href="delete_task.php?id=<?php echo $row['id']; ?>" class="btn btn-danger btn-sm">Verwijderen</a>
+                                <a href="complete_task.php?id=<?php echo $task['id']; ?>" class="btn btn-success btn-sm">Complete</a>
+                                <a href="delete_task.php?id=<?php echo $task['id']; ?>" class="btn btn-danger btn-sm">Delete</a>
                             </div>
                         </li>
-                    <?php endwhile; ?>
+                    <?php endforeach; ?>
                 <?php else: ?>
                     <li class="list-group-item">No open tasks found</li>
                 <?php endif; ?>
@@ -96,15 +100,15 @@ $completed_tasks = $conn->query("SELECT * FROM tasks WHERE is_completed = 1");
         <div class="col-md-6">
             <h2 class="text-center">Completed Tasks</h2>
             <ul class="list-group">
-                <?php if ($completed_tasks->num_rows > 0): ?>
-                    <?php while ($row = $completed_tasks->fetch_assoc()): ?>
+                <?php if (!empty($completed_tasks)): ?>
+                    <?php foreach ($completed_tasks as $task): ?>
                         <li class="list-group-item d-flex justify-content-between align-items-center">
-                            <?php echo $row['task_name']; ?>
+                            <?php echo htmlspecialchars($task['task_name']); ?>
                             <div>
-                                <a href="delete_task.php?id=<?php echo $row['id']; ?>" class="btn btn-danger btn-sm">Verwijderen</a>
+                                <a href="delete_task.php?id=<?php echo $task['id']; ?>" class="btn btn-danger btn-sm">Delete</a>
                             </div>
                         </li>
-                    <?php endwhile; ?>
+                    <?php endforeach; ?>
                 <?php else: ?>
                     <li class="list-group-item">No completed tasks found</li>
                 <?php endif; ?>
