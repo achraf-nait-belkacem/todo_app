@@ -1,26 +1,56 @@
 <?php
+require_once 'session_config.php';
 session_start();
+
+// Generate CSRF token if not exists
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
 include 'db.php';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email = $_POST['email'];
-    $password = $_POST['password'];
-
-    $stmt = $conn->prepare("SELECT id, password FROM users WHERE email = ?");
-    $stmt->bind_param('s', $email);
-    $stmt->execute();
-    $stmt->store_result();
-    $stmt->bind_result($user_id, $hashed_password);
-    $stmt->fetch();
-
-    if ($stmt->num_rows > 0 && password_verify($password, $hashed_password)) {
-        $_SESSION['user_id'] = $user_id;
-        header("Location: index.php");
-    } else {
-        echo "Invalid email or password";
+    if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== $_SESSION['csrf_token']) {
+        die('CSRF token validation failed');
     }
 
-    $stmt->close();
+    $email = filter_var($_POST['email'], FILTER_SANITIZE_EMAIL);
+    $password = $_POST['password'];
+
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $error = "Invalid email format";
+    } else {
+        // Check user credentials
+        $stmt = $conn->prepare("SELECT id, password, login_attempts, last_attempt FROM users WHERE email = ?");
+        $stmt->execute([$email]);
+        $user = $stmt->fetch();
+
+        if ($user) {
+            // Check for too many login attempts
+            if ($user['login_attempts'] >= 5 && (time() - strtotime($user['last_attempt'])) < 900) {
+                $error = "Too many failed attempts. Please try again in 15 minutes.";
+            } else {
+                if (password_verify($password, $user['password'])) {
+                    // Reset login attempts on successful login
+                    $reset = $conn->prepare("UPDATE users SET login_attempts = 0 WHERE id = ?");
+                    $reset->execute([$user['id']]);
+
+                    // Regenerate session ID to prevent session fixation
+                    session_regenerate_id(true);
+                    $_SESSION['user_id'] = $user['id'];
+                    header("Location: index.php");
+                    exit;
+                } else {
+                    // Increment login attempts
+                    $update = $conn->prepare("UPDATE users SET login_attempts = login_attempts + 1, last_attempt = NOW() WHERE email = ?");
+                    $update->execute([$email]);
+                    $error = "Invalid email or password";
+                }
+            }
+        } else {
+            $error = "Invalid email or password";
+        }
+    }
 }
 ?>
 
@@ -35,7 +65,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <body>
 <div class="container mt-5">
     <h1 class="text-center">Login</h1>
+    <?php if (isset($error)): ?>
+        <div class="alert alert-danger"><?php echo htmlspecialchars($error); ?></div>
+    <?php endif; ?>
     <form action="login.php" method="POST">
+        <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
         <div class="mb-3">
             <label for="email" class="form-label">Email</label>
             <input type="email" class="form-control" id="email" name="email" required>
@@ -47,7 +81,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <button type="submit" class="btn btn-primary w-100">Login</button>
     </form>
     <div class="text-center mt-3">
-        <p><a href="forgot-password.php">Forgot Password?</a></p>
+        <p><a href="forgot_password.php">Forgot Password?</a></p>
     </div>
     <div class="text-center mt-3">
         <p>Don't have an account? <a href="register.php">Register here</a></p>

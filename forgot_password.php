@@ -1,57 +1,121 @@
 <?php
+session_start();
+
+// Generate CSRF token if not exists
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
 include 'db.php';
 include 'send_mailer.php';
 
+$message = '';
+$messageType = '';
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email = $_POST['email'];
-    $stmt = $conn->prepare("SELECT id FROM users WHERE email = ?");
-    $stmt->bind_param('s', $email);
-    $stmt->execute();
-    $stmt->store_result();
-
-    if ($stmt->num_rows > 0) {
-        $token = bin2hex(random_bytes(16));
-        $expiry = date("Y-m-d H:i:s", strtotime("+1 hour"));
-
-        $stmt = $conn->prepare("INSERT INTO password_resets (email, token, expires_at) VALUES (?,?,?)");
-        $stmt->bind_param('sss', $email, $token, $expiry);
-        $stmt->execute();
-
-        $resetLink = "http://localhost/todo-app/reset-password.php?token=$token";
-        $subject = "Reset password request";
-        $body = "Click <a href='$resetLink'>here</a> to reset your password, this link will expire in 1 hour.";
-
-        sendEmail($email, $subject, $body);
-        echo "Password reset email sent!";
-    } else {
-        echo "Email not found";
+    // Validate CSRF token
+    if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== $_SESSION['csrf_token']) {
+        die('CSRF token validation failed');
     }
-    $stmt->close();
+
+    $email = filter_var($_POST['email'], FILTER_SANITIZE_EMAIL);
+    
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $message = "Invalid email format";
+        $messageType = "danger";
+    } else {
+        $stmt = $conn->prepare("SELECT id FROM users WHERE email = ?");
+        $stmt->bind_param('s', $email);
+        $stmt->execute();
+        $stmt->store_result();
+
+        if ($stmt->num_rows > 0) {
+            // Generate a secure token
+            $token = bin2hex(random_bytes(32));
+            $expiry = date("Y-m-d H:i:s", strtotime("+1 hour"));
+
+            // Delete any existing reset tokens for this email
+            $delete = $conn->prepare("DELETE FROM password_resets WHERE email = ?");
+            $delete->bind_param('s', $email);
+            $delete->execute();
+            $delete->close();
+
+            // Insert new reset token
+            $insert = $conn->prepare("INSERT INTO password_resets (email, token, expires_at) VALUES (?, ?, ?)");
+            $insert->bind_param('sss', $email, $token, $expiry);
+            
+            if ($insert->execute()) {
+                $resetLink = APP_URL . "/reset_password.php?token=" . urlencode($token);
+                $subject = APP_NAME . " - Password Reset Request";
+                $body = "Hello,<br><br>Someone requested a password reset for your account. If this wasn't you, please ignore this email.<br><br>
+                        To reset your password, click the following link (valid for 1 hour):<br><br>
+                        <a href='$resetLink'>Reset Password</a><br><br>
+                        If the link doesn't work, copy and paste this URL into your browser:<br>
+                        $resetLink<br><br>
+                        Best regards,<br>" . APP_NAME;
+
+                if (sendEmail($email, $subject, $body)) {
+                    $message = "Password reset instructions have been sent to your email";
+                    $messageType = "success";
+                } else {
+                    $message = "Failed to send reset email. Please try again later";
+                    $messageType = "danger";
+                }
+            } else {
+                $message = "An error occurred. Please try again later";
+                $messageType = "danger";
+            }
+            $insert->close();
+        } else {
+            // For security, show the same message even if email doesn't exist
+            $message = "If your email exists in our system, you will receive password reset instructions";
+            $messageType = "info";
+        }
+        $stmt->close();
+    }
 }
-
-
-
-
 ?>
-
 
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Forgot Password</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Forgot Password - <?php echo APP_NAME; ?></title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
 </head>
 <body>
 <div class="container mt-5">
-    <h1 class="text-center">Forgot Password</h1>
-    <form action="forgot-password.php" method="POST">
-        <div class="mb-3">
-            <label for="email" class="form-label">Email</label>
-            <input type="email" class="form-control" id="email" name="email" required>
+    <div class="row justify-content-center">
+        <div class="col-md-6">
+            <h1 class="text-center mb-4">Forgot Password</h1>
+            
+            <?php if ($message): ?>
+                <div class="alert alert-<?php echo htmlspecialchars($messageType); ?>" role="alert">
+                    <?php echo htmlspecialchars($message); ?>
+                </div>
+            <?php endif; ?>
+
+            <div class="card">
+                <div class="card-body">
+                    <form action="forgot_password.php" method="POST">
+                        <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+                        <div class="mb-3">
+                            <label for="email" class="form-label">Email Address</label>
+                            <input type="email" class="form-control" id="email" name="email" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary w-100">Send Reset Link</button>
+                    </form>
+                </div>
+            </div>
+
+            <div class="text-center mt-3">
+                <p>Remember your password? <a href="login.php">Login here</a></p>
+            </div>
         </div>
-        <button type="submit" class="btn btn-primary w-100">Send Reset Link</button>
-    </form>
+    </div>
 </div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
